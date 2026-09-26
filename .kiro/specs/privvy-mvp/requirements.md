@@ -59,6 +59,10 @@ myself.
    detected rather than failing silently.
 5. WHEN matching link text THEN Privvy SHALL match case-insensitively and tolerate extra
    surrounding words (e.g. "Read our Privacy Policy here").
+6. WHEN policy links are detected THEN Privvy SHALL require the user to explicitly select
+   one before any fetch or analysis occurs. Privvy SHALL NOT automatically fetch a
+   detected link, because the detected list is derived from page-controlled content and
+   is therefore untrusted.
 
 > Note: In the MVP, detection runs on user invocation. Consent-context gating for the
 > fully automatic trigger is a later phase (see Non-Goals).
@@ -83,6 +87,12 @@ so that it can be summarized accurately.
 5. IF the extracted text is below a minimum length threshold (implying extraction
    failed) THEN Privvy SHALL treat it as an extraction failure and report it, rather
    than summarizing garbage.
+6. WHEN fetching a selected policy URL THEN Privvy SHALL require the URL to use `https`,
+   and SHALL reject loopback, link-local, and private-network targets. Privvy SHALL apply
+   the same checks to every redirect target before following it (SSRF protection).
+7. WHEN preparing a policy URL for fetch, transmission, or storage THEN Privvy SHALL strip
+   the query string and fragment, retaining only origin and path, so that secrets carried
+   in query parameters are never transmitted or stored.
 
 ### Requirement 3: Summarization (TLDR)
 
@@ -100,8 +110,11 @@ so that I understand it without reading the whole document.
    state rather than a broken UI.
 4. WHEN summarizing THEN the backend SHALL send only the policy text — no user identity,
    IP-derived data, or browsing history.
-5. The Gemini model name SHALL be a server-side configuration value, so it can be
-   changed without code edits to the extension.
+5. The Gemini model name SHALL be a server-side configuration value with no hardcoded
+   default, so it can be changed without code edits to the extension. The deploying
+   project SHALL set it to a model that project can access and SHALL verify access before
+   relying on it (Google restricts some models, e.g. `gemini-2.5-flash`, to projects with
+   prior usage).
 
 ### Requirement 4: Caching
 
@@ -117,9 +130,9 @@ analyses are instant and we minimize API calls, without storing anything about u
 3. WHEN an analysis request arrives AND the content hash is not cached THEN the backend
    SHALL call Gemini, store the result keyed by content hash, and return it (a cache
    miss).
-4. WHEN storing an analysis THEN the record SHALL contain only: content hash, source
-   URL (metadata), TLDR, model identifier, and a timestamp. It SHALL NOT contain any
-   user identifier, IP address, or session data.
+4. WHEN storing an analysis THEN the record SHALL contain only: content hash, sanitized
+   source URL (origin + path, no query string or fragment), TLDR, model identifier, and a
+   timestamp. It SHALL NOT contain any user identifier, IP address, or session data.
 5. WHEN the same policy is served from a different URL but has identical text THEN it
    SHALL resolve to the same cache entry (because the key is the content hash).
 6. WHEN a policy's text changes THEN its content hash changes, producing a cache miss
@@ -136,8 +149,9 @@ policy, so that the client stays simple and the API key stays server-side.
    text and its source URL.
 2. WHEN `/analyze` receives a request THEN it SHALL perform the cache-check-then-Gemini
    flow (Requirement 4) and return the analysis as structured JSON.
-3. WHEN `/analyze` receives a request missing required fields THEN it SHALL return a
-   validation error with a clear message and SHALL NOT call Gemini.
+3. WHEN `/analyze` receives a request missing required fields, or a `url` that is not
+   `https` or still contains a query string or fragment THEN it SHALL return a validation
+   error with a clear message and SHALL NOT call Gemini.
 4. The Gemini API key SHALL be stored only as a server-side secret and SHALL NEVER be
    present in the extension bundle or client-side code.
 5. The response SHALL indicate whether the result came from cache or was freshly
@@ -198,8 +212,14 @@ here so scope stays clear.
 
 ## Privacy Position (Design Constraint)
 
-- Privvy sends only public legal text (the policy document) to the backend and on to
-  Gemini. No user identity, IP-derived data, or browsing history is transmitted.
+- Privvy sends only public legal text (the policy document) plus a sanitized source URL
+  (origin + path) to the backend and on to Gemini. No user identity or browsing history
+  is transmitted.
+- Scope of the "no IP-derived data" guarantee: the client payload, the policy cache, and
+  the Gemini request contain no IP-derived data. The one exception is abuse protection at
+  the edge, which processes the caller IP to rate-limit and stores only a hashed IP
+  counter with a TTL equal to the rate-limit window (never raw IPs, never retained past
+  the window). This is transient infrastructure protection, not product data collection.
 - No user data is stored. The cache holds analyses of documents, keyed by document
   content, with no link to any person.
 - These are hard constraints, not features: every requirement above must hold to them.

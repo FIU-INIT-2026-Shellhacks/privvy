@@ -54,12 +54,16 @@ it satisfies.
 
 - [ ] 4. LLM provider interface + GeminiProvider
   - Define `LlmProvider.summarize(policyText)` and implement `GeminiProvider` calling
-    `generateContent` on `GEMINI_MODEL` (default `gemini-2.5-flash`), key from
-    server-side env/secret.
-  - Return `{ tldr, model }`. Handle upstream errors/timeouts as a typed failure.
+    `generateContent` on the model named by `GEMINI_MODEL` (no hardcoded default — the
+    deploying project sets it to a model it can access), key from server-side env/secret.
+  - Return `{ tldr, model }`. Handle upstream errors/timeouts as a typed failure. Fail
+    clearly if `GEMINI_MODEL` is unset rather than falling back to a possibly-inaccessible
+    model.
   - _Requirements: 3.1, 3.2, 3.4, 3.5._
   - _Tests: mocked Gemini HTTP — success path returns TLDR; error/timeout maps to
-    UPSTREAM; asserts the key is read from env and never logged. No live network in the
+    UPSTREAM; unset `GEMINI_MODEL` -> clear config error; asserts the key is read from env
+    and never logged. No live network in the automated suite._
+  - _Note: real model-access verification against the target project is Task 15, not the
     automated suite._
 
 - [ ] 5. Cache lookup + store flow
@@ -70,21 +74,29 @@ it satisfies.
     called); miss invokes provider once and persists; `cached` flag correct both ways._
 
 - [ ] 6. `/analyze` endpoint: validation + wiring
-  - Parse/validate the body (required fields, URL well-formed, text non-empty and within
-    MAX_TEXT_CHARS). If `contentHash` supplied, verify it re-hashes to the same value.
+  - Parse/validate the body (required fields, text non-empty and within MAX_TEXT_CHARS).
+    Validate `url`: must be `https` and must not contain a query string or fragment
+    (defense-in-depth against secret leakage); reject otherwise as VALIDATION. If
+    `contentHash` supplied, verify it re-hashes to the same value.
   - Wire validation -> cache/store flow -> typed JSON response and error codes/statuses.
-  - _Requirements: 5.1, 5.2, 5.3, 3.3._
+  - _Requirements: 5.1, 5.2, 5.3, 3.3; URL sanitization (Req 2.7)._
   - _Tests: valid request happy path; missing/blank field -> 400 VALIDATION (no provider
-    call); oversized text -> rejected/capped per design; mismatched contentHash ->
-    VALIDATION; Gemini failure surfaces as 502 UPSTREAM._
+    call); non-https or query/fragment-bearing url -> 400 VALIDATION; oversized text ->
+    rejected/capped per design; mismatched contentHash -> VALIDATION; Gemini failure
+    surfaces as 502 UPSTREAM._
 
 - [ ] 7. Abuse protection (rate limiting + input caps)
   - Implement per-IP rate limiting at the edge (counter store or Deno KV sliding window),
     returning 429 RATE_LIMIT when exceeded. Enforce MAX_TEXT_CHARS server-side.
-  - _Requirements: Security/abuse protection (design); 5.3._
-  - _Tests: requests under the limit pass; over the limit -> 429; window resets; oversize
-    input rejected. Time/window dependency injected so tests are deterministic and
-    offline._
+  - Privacy-preserving limiter: the counter key SHALL be a hash of the caller IP (not the
+    raw IP), with a TTL equal to `RATE_LIMIT_WINDOW`. Store no raw IPs; retain nothing
+    past the window. This is the only place IP is processed and is scoped out of the
+    product's no-user-data guarantee (see requirements Privacy Position).
+  - _Requirements: Security/abuse protection + Privacy Position scoping (design/req);
+    5.3._
+  - _Tests: requests under the limit pass; over the limit -> 429; window resets and the
+    counter expires at TTL; the stored key is a hash, not a raw IP; oversize input
+    rejected. Time/window dependency injected so tests are deterministic and offline._
 
 ---
 
@@ -106,24 +118,33 @@ it satisfies.
   - Scan anchors, match the keyword set case-insensitively against link text and href,
     resolve to absolute URLs, deduplicate, return `{ url, text }[]` to the service
     worker. Empty -> no-policy signal. Detection only: the content script does not fetch
-    or extract (fetch is CSP-sensitive and lives in the worker).
-  - _Requirements: 1.1, 1.2, 1.3, 1.4, 1.5._
+    or extract (fetch is CSP-sensitive and lives in the worker). The returned list is
+    untrusted, page-derived input; nothing is fetched until the user selects a link
+    (Task 13).
+  - _Requirements: 1.1, 1.2, 1.3, 1.4, 1.5, 1.6._
   - _Tests (on fixture DOMs): finds policy + terms links; ignores unrelated links;
     case/extra-words tolerant; dedupes same resolved URL; empty page -> no-policy._
 
-- [ ] 10. Text extraction + guard rails (service worker)
-  - In the service worker: fetch the policy URL (governed by `host_permissions`, immune
-    to page CSP), require HTML content type, parse with a DOM-free HTML-to-text parser
-    (no `DOMParser` in MV3 workers), strip non-content elements, normalize text. Apply
-    guards: non-HTML -> UNSUPPORTED_FORMAT; below MIN_TEXT_CHARS -> EXTRACTION_FAILED;
+- [ ] 10. URL validation + text extraction + guard rails (service worker)
+  - SSRF guard first: validate the user-selected URL — require `https`; resolve the host
+    and reject loopback (`127.0.0.0/8`, `::1`, `localhost`), link-local
+    (`169.254.0.0/16`, `fe80::/10`), and private ranges (`10/8`, `172.16/12`, `192.168/16`,
+    `fc00::/7`). Strip query string and fragment to produce the sanitized URL.
+  - Fetch with manual redirect handling; re-validate every redirect target with the same
+    rules before following. Require HTML content type. Parse with a DOM-free HTML-to-text
+    parser (no `DOMParser` in MV3 workers), strip non-content elements, normalize text.
+    Guards: non-HTML -> UNSUPPORTED_FORMAT; below MIN_TEXT_CHARS -> EXTRACTION_FAILED;
     above MAX_TEXT_CHARS -> truncate.
-  - _Requirements: 2.1, 2.2, 2.3, 2.4, 2.5; page-CSP/host_permissions (design)._
-  - _Tests (mocked fetch + fixture HTML): clean extraction on a normal page; PDF
+  - _Requirements: 2.1, 2.2, 2.3, 2.4, 2.5, 2.6, 2.7; page-CSP/host_permissions (design)._
+  - _Tests (mocked fetch + fixture HTML): clean extraction on a normal https page; http
+    URL rejected; loopback/link-local/private hosts rejected; a redirect to a private
+    host is rejected mid-chain; query/fragment stripped from the stored/sent URL; PDF
     content-type bails; too-short bails; oversized truncates; whitespace normalized. No
     live network._
   - _Decision: extraction moved from the content script to the service worker so the
     cross-origin fetch is governed by host_permissions rather than the visited page's
-    CSP; requires a DOM-free HTML parser dependency._
+    CSP; requires a DOM-free HTML parser dependency. The worker is authorized to reach
+    anywhere host_permissions allows, so the SSRF validation above is mandatory._
 
 - [ ] 11. Client hashing util (parity with server)
   - SHA-256 hex over normalized text via SubtleCrypto, matching Task 3's output exactly.
@@ -131,20 +152,22 @@ it satisfies.
   - _Tests: shared vectors produce identical hashes to the server util._
 
 - [ ] 12. Service worker orchestration + backend call
-  - Receive the detected policy URL from the content script, run the fetch+extraction
-    from Task 10, enforce the client max-length guard, compute the hash, POST to
-    `/analyze` over HTTPS, relay the response. Map network and typed backend errors to
-    user-facing states.
-  - _Requirements: 6.2, 6.4, 3.3; payload minimization (only text + url)._
+  - Receive the user-selected policy URL from the popup, run the validation +
+    fetch + extraction from Task 10, enforce the client max-length guard, compute the
+    hash, POST to `/analyze` over HTTPS with the sanitized URL (origin + path only),
+    relay the response. Map network and typed backend errors to user-facing states.
+  - _Requirements: 6.2, 6.4, 3.3; payload minimization (only text + sanitized url)._
   - _Tests (mocked backend): success relays TLDR; 429/502/network map to correct error
-    states; asserts no identity/cookies added to the payload._
+    states; asserts the sent url carries no query/fragment and no identity/cookies added
+    to the payload._
 
 - [ ] 13. Popup UI (states + rendering)
-  - Implement the state machine: idle -> detecting -> link list -> analyzing (loading) ->
-    result (TLDR) or error (with retry). Optional "from cache" indicator.
-  - _Requirements: 6.1, 6.2, 6.3, 6.4, 6.5._
-  - _Tests: state transitions render the right view; error states show retry; TLDR
-    renders; loading shown during analysis._
+  - Implement the state machine: idle -> detecting -> link list -> user selects one link
+    -> analyzing (loading) -> result (TLDR) or error (with retry). Optional "from cache"
+    indicator. Analysis must not start until the user selects a link (SSRF guard).
+  - _Requirements: 6.1, 6.2, 6.3, 6.4, 6.5, 1.6._
+  - _Tests: state transitions render the right view; no fetch/analyze fires before a
+    selection; error states show retry; TLDR renders; loading shown during analysis._
 
 ---
 
@@ -159,11 +182,15 @@ it satisfies.
     required real-service verification step; keep it out of the automated suite._
 
 - [ ] 15. Manual real-service verification pass
-  - Deliberately verify the mocked contracts against reality: one real Gemini call shape
-    matches `GeminiProvider`; one real policy page extracts cleanly; a PDF link bails
-    gracefully; rate limit triggers under rapid repeated calls.
-  - _Requirements: 2.3, 3.1, 4.2, abuse protection — validated against real services._
-  - _Note: manual, credentialed, outside CI._
+  - Deliberately verify the mocked contracts against reality: confirm the configured
+    `GEMINI_MODEL` is actually accessible to the target project and one real
+    `generateContent` call succeeds and matches `GeminiProvider`; one real policy page
+    extracts cleanly; a PDF link bails gracefully; an http or private-host URL is rejected
+    by the SSRF guard; rate limit triggers under rapid repeated calls.
+  - _Requirements: 2.3, 2.6, 3.1, 3.5, 4.2, abuse protection — validated against real
+    services._
+  - _Note: manual, credentialed, outside CI. Model-access check here is the reason Task 4
+    uses no hardcoded model default._
 
 ---
 

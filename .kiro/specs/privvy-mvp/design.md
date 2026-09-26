@@ -21,8 +21,9 @@ Option 1 for fetching (extension fetches and extracts; backend receives only tex
 |                     Chrome Extension (MV3, TS)             |
 |                                                            |
 |  Popup UI            Service Worker         Content Script |
-|  (results/errors) <-> (orchestrator,   <->  (detection,    |
-|                        hashing, fetch)      extraction)    |
+|  (results/errors) <-> (orchestrator,   <->  (detection     |
+|                        fetch, extract,      only)          |
+|                        hashing)                            |
 +---------------------------------|--------------------------+
                                   | HTTPS (TLS), text + url only
                                   v
@@ -42,7 +43,8 @@ Option 1 for fetching (extension fetches and extracts; backend receives only tex
 ```
 
 Boundary summary:
-- The extension owns detection, fetching, extraction, and hashing.
+- The content script owns detection only (it needs the live DOM to find links).
+- The service worker owns URL validation, fetch, extraction, and hashing.
 - The backend owns validation, abuse protection, caching, and the model call.
 - The only shared contract between the two teams is the `/analyze` JSON payload.
 
@@ -65,11 +67,24 @@ Runs in the context of the visited page. Detection only.
 The orchestrator, and the owner of fetch + extraction. Holds no long-lived state (MV3
 workers are ephemeral).
 
-- Receives the detected policy URL from the content script.
-- **Fetch**: performs `fetch(policyUrl)`. Because the service worker is not a web page,
-  the visited site's CSP does not apply; the fetch is governed by the extension's
+- Receives only the policy URL the user explicitly selected from the detected-link
+  list (see popup states). It never fetches a link automatically just because it was
+  detected — the content script's list is page-controlled and therefore untrusted.
+- **URL validation (SSRF guard)**: before fetching, validates the selected URL and
+  rejects it unless it is `https`. Resolves the host and rejects loopback
+  (`127.0.0.0/8`, `::1`, `localhost`), link-local (`169.254.0.0/16`, `fe80::/10`),
+  and private-network targets (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`,
+  unique-local `fc00::/7`). Applies the same validation to every redirect target
+  before following it (fetch uses manual redirect handling so each hop is checked).
+- **Fetch**: performs `fetch(validatedUrl)`. Because the service worker is not a web
+  page, the visited site's CSP does not apply; the fetch is governed by the extension's
   `host_permissions` instead. This is the reason fetch lives here rather than in the
-  content script.
+  content script — and the reason the URL/redirect validation above is mandatory, since
+  the worker is authorized to reach anywhere `host_permissions` allows.
+- **URL sanitization**: before hashing/sending, strips the query string and fragment
+  from the URL, keeping only origin + path as `source_url` metadata (see Data Model).
+  This prevents secrets that may live in query params (session tokens, account IDs)
+  from being transmitted or stored.
 - **Extraction**: parses the fetched HTML and extracts readable text (Req 2). MV3
   service workers have no DOM, so `DOMParser` is unavailable; extraction uses a
   DOM-free HTML-to-text parser (a small library) to strip scripts, styles, nav, header,
@@ -88,8 +103,10 @@ workers are ephemeral).
 The user-facing surface (Req 6).
 
 - Triggered by the toolbar icon click.
-- States: idle -> detecting -> (list of policy links) -> analyzing (loading) ->
-  result (TLDR) or error (with retry).
+- States: idle -> detecting -> (list of policy links) -> user selects one link ->
+  analyzing (loading) -> result (TLDR) or error (with retry).
+- Analysis only begins after the user explicitly selects one detected link. The
+  extension never auto-fetches a detected link (SSRF guard; see Service Worker).
 - Optionally shows a "from cache" indicator when the backend reports a cache hit.
 
 ### 4. Edge Function `/analyze` (backend)
@@ -112,8 +129,13 @@ interface LlmProvider {
 }
 ```
 
-- MVP implementation: `GeminiProvider`, calling `generateContent` on a configured model
-  (default `gemini-2.5-flash`, read from an environment variable).
+- MVP implementation: `GeminiProvider`, calling `generateContent` on the model named by
+  the `GEMINI_MODEL` env var. There is no safe hardcoded default: Google currently
+  limits `gemini-2.5-flash` access to projects that previously used 2.5 models, and
+  steers new projects to 3.x models. The deploying project MUST set `GEMINI_MODEL` to a
+  model it can actually access, and verify that model against the target project before
+  relying on it (see Tasks 4 and 15). `gemini-2.5-flash` is a documented example, not a
+  guaranteed-available default.
 - The Gemini API key is read from a server-side secret/env var, never shipped to the
   client (Req 3.4, 5.4).
 
@@ -125,7 +147,7 @@ A single Postgres table. No user table, no auth.
 ```sql
 create table policies (
   content_hash text primary key,        -- SHA-256 hex of normalized policy text
-  source_url   text not null,           -- metadata only; where it was seen
+  source_url   text not null,           -- sanitized: origin + path only, no query/fragment
   tldr         text not null,           -- plain-English summary
   model        text not null,           -- e.g. "gemini-2.5-flash"
   created_at   timestamptz not null default now()
@@ -136,6 +158,9 @@ Notes:
 - `content_hash` is the primary key, so identical text from different URLs dedupes to one
   row (Req 4.5), and changed text yields a new row (Req 4.6).
 - The table intentionally has no user identifier, IP, or session column (Req 4.4).
+- `source_url` is stored sanitized: origin + path only, with the query string and
+  fragment stripped before it ever leaves the extension. This prevents secrets that can
+  live in query params (session tokens, account IDs) from being transmitted or stored.
 - No TTL/expiry in the MVP; expiry is deferred (Non-Goal 7).
 
 ## Interface Contract: `/analyze`
@@ -149,7 +174,9 @@ Request (POST, `application/json`):
 }
 ```
 - `text` required, non-empty, at most MAX_TEXT_CHARS.
-- `url` required, must parse as an http(s) URL.
+- `url` required, must be an `https` URL, already sanitized by the client to origin +
+  path (no query string or fragment). The backend rejects a URL containing a query or
+  fragment as a VALIDATION error (defense in depth against secret leakage).
 - `contentHash` optional; if provided the backend verifies it matches a re-hash of
   `text` (defense against a mismatched key), otherwise the backend computes it.
 
@@ -179,13 +206,16 @@ Detection heuristic (content script):
 4. Deduplicate by resolved URL; return list of `{ url, text }` (Req 1.2, 1.3).
 5. Empty list -> "no policy detected" (Req 1.4).
 
-Extraction (service worker), given a policy URL from the content script:
-1. `fetch(url)` from the service worker (governed by `host_permissions`, not page CSP);
-   require an HTML content type.
-2. Parse with a DOM-free HTML-to-text parser (no `DOMParser` in MV3 workers); remove
+Extraction (service worker), given the user-selected policy URL:
+1. Validate the URL (SSRF guard): require `https`; reject loopback, link-local, and
+   private-network hosts (see Service Worker). Strip query string and fragment.
+2. `fetch(url)` from the service worker with manual redirect handling (governed by
+   `host_permissions`, not page CSP); re-validate every redirect target with the same
+   rules before following it. Require an HTML content type.
+3. Parse with a DOM-free HTML-to-text parser (no `DOMParser` in MV3 workers); remove
    `script`, `style`, `nav`, `header`, `footer`, `aside`, and hidden elements.
-3. Take the main text content, normalize whitespace (collapse runs, trim).
-4. Guard rails:
+4. Take the main text content, normalize whitespace (collapse runs, trim).
+5. Guard rails:
    - Non-HTML content type (e.g. PDF) -> bail with `UNSUPPORTED_FORMAT` (Req 2.3).
    - Extracted length below MIN_TEXT_CHARS -> bail with `EXTRACTION_FAILED` (Req 2.5).
    - Interaction-gated / unextractable -> bail with `EXTRACTION_FAILED` (Req 2.4).
@@ -210,14 +240,30 @@ All error states in the popup are non-fatal and offer retry where sensible (Req 
 
 ## Security and Abuse Protection
 
-- **Transport**: HTTPS/TLS on both hops (extension->backend, backend->Gemini). MV3
-  service workers can only call https endpoints.
+- **Transport**: TLS on the backend and Gemini hops (extension->backend, backend->Gemini)
+  is required. For the policy-page fetch, an MV3 service worker *can* fetch plain HTTP
+  when the extension declares matching HTTP host permissions; Privvy deliberately
+  restricts policy-page fetches to `https` as a security choice (see SSRF guard), rather
+  than because the platform forbids HTTP.
+- **SSRF guard (policy fetch)**: the worker fetches only a user-selected `https` URL, and
+  rejects loopback, link-local, and private-network hosts on the initial URL and on every
+  redirect hop (manual redirect handling). This prevents a page-planted link from
+  steering the authorized worker at internal or private endpoints.
+- **URL sanitization**: the client strips query string and fragment before sending, and
+  the backend rejects any `url` still containing them. Keeps secrets that can live in
+  query params out of transit and storage.
 - **Secret handling**: Gemini API key only as a Supabase secret/env var; never in the
   extension bundle (Req 3.4, 5.4).
-- **Payload minimization**: only public policy text + source URL cross the wire; no
-  identity, cookies, or IP-derived data attached by the client (Privacy Position).
+- **Payload minimization**: only public policy text + sanitized source URL (origin +
+  path) cross the wire; no identity, cookies, or IP-derived data attached by the client.
 - **Rate limiting**: per-IP throttle at the edge function to protect Gemini quota from a
-  public endpoint. Exceeding the limit returns 429 `RATE_LIMIT`.
+  public endpoint. Exceeding the limit returns 429 `RATE_LIMIT`. The limiter processes
+  the caller IP at the edge and stores only a *hashed* IP as a counter key with a TTL
+  equal to the rate-limit window (`RATE_LIMIT_WINDOW`); it never stores raw IPs and
+  retains nothing past the window. This edge-side, transient IP handling is the one place
+  IP is touched, and it is separate from the product's no-user-data guarantee, which
+  covers the client payload, the policy cache, and the Gemini request (see Privacy
+  Position scoping in requirements).
 - **Input caps**: reject or truncate `text` beyond MAX_TEXT_CHARS; reject malformed
   `url`. Treat all input as untrusted (no eval, no reflection).
 - **CORS**: extension callers present a `chrome-extension://` origin; strict origin
@@ -231,11 +277,14 @@ All error states in the popup are non-fatal and offer retry where sensible (Req 
 ## Constraints and Configuration
 
 Configurable values (documented, not hardcoded across the code):
-- `GEMINI_MODEL` (default `gemini-2.5-flash`) — server-side env var (Req 3.5).
+- `GEMINI_MODEL` — server-side env var naming the model (Req 3.5). No hardcoded default;
+  the deploying project must set it to a model it can access and verify it (see LLM
+  Provider Module). `gemini-2.5-flash` is an example, not a guaranteed default.
 - `GEMINI_API_KEY` — server-side secret.
 - `MAX_TEXT_CHARS` — upper bound on policy text length (client guard + server cap).
 - `MIN_TEXT_CHARS` — lower bound below which extraction is deemed failed (Req 2.5).
-- `RATE_LIMIT_*` — window and request count for per-IP throttling.
+- `RATE_LIMIT_WINDOW` / `RATE_LIMIT_MAX` — window duration and max requests per window for
+  per-IP throttling. The window also serves as the TTL for the hashed-IP counter.
 
 Hash algorithm: SHA-256 (SubtleCrypto on the client, Web Crypto/Deno std on the server),
 hex-encoded, computed over the normalized text so client and server agree.
