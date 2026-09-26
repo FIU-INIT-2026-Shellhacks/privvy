@@ -2,7 +2,12 @@
   "extends": "../tsconfig.base.json",
   "compilerOptions": {
     "outDir": "./dist",
-    "rootDir": "./src"
+    "rootDir": "./src",
+    // normalize.ts uses Web Crypto (`crypto.subtle`) and `TextEncoder`, which are
+    // runtime-agnostic globals present in both Deno and the browser. The "DOM" lib
+    // provides their type declarations without adding any runtime dependency.
+    "lib": ["ES2022", "DOM"]
   },
-  "include": ["src/**/*.ts"]
+  "include": ["src/**/*.ts"],
+  "exclude": ["src/**/*.test.ts"]
 }
