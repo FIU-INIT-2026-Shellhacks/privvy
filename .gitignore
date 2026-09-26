@@ -1,0 +1,46 @@
+# --- Secrets and local env files ---
+.env
+.env.*
+!.env.example
+*.local
+supabase/functions/.env
+*.pem
+*.key
+*.crx
+
+# --- Dependencies ---
+node_modules/
+.pnpm-store/
+
+# --- Build output ---
+dist/
+build/
+out/
+*.tsbuildinfo
+*.zip
+
+# --- Test / coverage ---
+coverage/
+.nyc_output/
+
+# --- Supabase CLI local state ---
+supabase/.branches/
+supabase/.temp/
+
+# --- Deno ---
+.deno/
+
+# --- Logs ---
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# --- Editor / OS ---
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+desktop.ini
