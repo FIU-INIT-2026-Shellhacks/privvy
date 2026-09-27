@@ -4,7 +4,7 @@
  * text, mismatched contentHash, and a Gemini (UPSTREAM) failure mapping to 502.
  */
 
-import { assertEquals } from '@std/assert';
+import { assert, assertEquals } from '@std/assert';
 import { handleAnalyze } from './handler.ts';
 import type { PolicyStore, StoredPolicy } from '../cache/store.ts';
 import type { LlmProvider, Summary } from '../llm/provider.ts';
@@ -186,4 +186,57 @@ Deno.test('an INTERNAL LlmError does not leak its message to the client', async 
   const body = await res.json();
   assertEquals(body.code, ErrorCode.INTERNAL);
   assertEquals(body.error, 'Unexpected server error.');
+});
+
+// --- Rate limiting (Task 7) -------------------------------------------------
+
+import type { CounterState, CounterStore } from '../ratelimit/store.ts';
+
+/** A store that always reports the request is over the limit. */
+const overLimitStore: CounterStore = {
+  increment: (): Promise<CounterState> => Promise.resolve({ count: 999, windowStart: 0 }),
+};
+/** A store that always reports the first request in a fresh window. */
+const underLimitStore: CounterStore = {
+  increment: (_k, _w, now): Promise<CounterState> =>
+    Promise.resolve({ count: 1, windowStart: now }),
+};
+
+const RL_CONFIG = { windowMs: 60_000, maxRequests: 10 };
+
+Deno.test('over the rate limit -> 429 RATE_LIMIT with Retry-After, no provider call', async () => {
+  const provider = new SpyProvider();
+  const req = jsonRequest({ text: TEXT, url: URL_OK });
+  const res = await handleAnalyze(req, {
+    store: new FakeStore(),
+    provider,
+    rateLimit: { store: overLimitStore, config: RL_CONFIG, now: () => 1_000_000 },
+  });
+  assertEquals(res.status, 429);
+  assertEquals((await res.json()).code, ErrorCode.RATE_LIMIT);
+  assert(res.headers.get('retry-after') !== null, 'Retry-After header should be set');
+  assertEquals(provider.calls, 0, 'blocked request must not reach the provider');
+});
+
+Deno.test('under the rate limit -> request proceeds normally', async () => {
+  const provider = new SpyProvider();
+  const res = await handleAnalyze(jsonRequest({ text: TEXT, url: URL_OK }), {
+    store: new FakeStore(),
+    provider,
+    rateLimit: { store: underLimitStore, config: RL_CONFIG, now: () => 1_000_000 },
+  });
+  assertEquals(res.status, 200);
+  assertEquals(provider.calls, 1);
+});
+
+Deno.test('a limiter store error fails open (request still proceeds)', async () => {
+  const failingStore: CounterStore = {
+    increment: () => Promise.reject(new Error('db down')),
+  };
+  const res = await handleAnalyze(jsonRequest({ text: TEXT, url: URL_OK }), {
+    store: new FakeStore(),
+    provider: new SpyProvider(),
+    rateLimit: { store: failingStore, config: RL_CONFIG, now: () => 1_000_000 },
+  });
+  assertEquals(res.status, 200, 'a limiter outage must not take the endpoint down');
 });
