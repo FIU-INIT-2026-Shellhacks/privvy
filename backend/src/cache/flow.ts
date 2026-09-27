@@ -83,9 +83,19 @@ export async function analyzeCached(
   // MISS: summarize once (Req 4.3). If this throws, nothing is stored.
   const { tldr, model } = await provider.summarize(text);
 
-  await store.put({ contentHash, sourceUrl, tldr, model });
+  // Persist and adopt the row that is now authoritative for this hash. Under a concurrent
+  // miss on the same hash, the FIRST insert wins; `put` returns that stored row, so this
+  // request (and every later cache hit) returns the same canonical summary rather than
+  // this request's own in-memory one (semantic/CodeRabbit review: concurrent-insert
+  // consistency).
+  const stored = await store.put({ contentHash, sourceUrl, tldr, model });
 
-  return { contentHash, tldr, model, cached: false };
+  return {
+    contentHash: stored.contentHash,
+    tldr: stored.tldr,
+    model: stored.model,
+    cached: false,
+  };
 }
 
 /** Throws LlmError(VALIDATION) unless url is https with no query string or fragment. */

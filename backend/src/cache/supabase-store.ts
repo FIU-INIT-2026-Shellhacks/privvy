@@ -86,9 +86,9 @@ export class SupabasePolicyStore implements PolicyStore {
     };
   }
 
-  async put(policy: StoredPolicy): Promise<void> {
+  async put(policy: StoredPolicy): Promise<StoredPolicy> {
     // upsert on the content_hash primary key: idempotent if two requests race the same
-    // miss (Req 4.5 dedup). Ignoring duplicates keeps the first stored analysis.
+    // miss (Req 4.5 dedup). ignoreDuplicates keeps the FIRST stored analysis.
     const row: PolicyRow = {
       content_hash: policy.contentHash,
       source_url: policy.sourceUrl,
@@ -102,5 +102,14 @@ export class SupabasePolicyStore implements PolicyStore {
     if (error) {
       throw new LlmError(ErrorCode.INTERNAL, 'Cache store failed.', error);
     }
+
+    // Read back the row that is now authoritative for this hash. With ignoreDuplicates an
+    // upsert that lost a concurrent race writes nothing and returns no row, so we always
+    // re-read to return the winning summary (not necessarily the one we just tried to
+    // write). This keeps concurrent and later callers consistent.
+    const stored = await this.get(policy.contentHash);
+    // Fallback to the submitted row only if the read unexpectedly finds nothing (should
+    // not happen after a successful upsert, but avoids returning null on a transient gap).
+    return stored ?? policy;
   }
 }

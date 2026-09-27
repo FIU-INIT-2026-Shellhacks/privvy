@@ -17,10 +17,13 @@ class FakeStore implements PolicyStore {
   get(hash: string): Promise<StoredPolicy | null> {
     return Promise.resolve(this.map.get(hash) ?? null);
   }
-  put(p: StoredPolicy): Promise<void> {
+  put(p: StoredPolicy): Promise<StoredPolicy> {
     this.putCalls++;
+    // First write wins (mirrors upsert ignoreDuplicates); return the authoritative row.
+    const existing = this.map.get(p.contentHash);
+    if (existing) return Promise.resolve(existing);
     this.map.set(p.contentHash, p);
-    return Promise.resolve();
+    return Promise.resolve(p);
   }
 }
 
@@ -124,4 +127,45 @@ Deno.test('a non-https or query/fragment-bearing sourceUrl is rejected as VALIDA
   }
   assertEquals(provider.calls, 0);
   assertEquals(store.putCalls, 0);
+});
+
+Deno.test('concurrent miss on the same hash returns the summary that won the insert', async () => {
+  const store = new FakeStore();
+  // Pre-seed as if a racing request already stored its summary first.
+  store.map.set(HASH, {
+    contentHash: HASH,
+    sourceUrl: 'https://example.com/privacy',
+    tldr: 'winner summary',
+    model: 'winner-model',
+  });
+  store.putCalls = 0;
+  // This provider would produce a DIFFERENT summary...
+  const provider = new SpyProvider({ tldr: 'loser summary', model: 'loser-model' });
+
+  // ...but because the store already has the row, this is actually a HIT and returns the
+  // winner. (The miss+put path is covered below via a store whose put returns the winner.)
+  const res = await analyzeCached(input, { store, provider });
+  assertEquals(res.tldr, 'winner summary');
+  assertEquals(res.model, 'winner-model');
+});
+
+Deno.test('a miss whose put loses the race adopts the stored winner summary', async () => {
+  // Store starts empty for get(), but its put() returns a pre-existing winner row,
+  // simulating another request having inserted first between our get and put.
+  const winner: StoredPolicy = {
+    contentHash: HASH,
+    sourceUrl: 'https://example.com/privacy',
+    tldr: 'winner summary',
+    model: 'winner-model',
+  };
+  const racingStore: PolicyStore = {
+    get: () => Promise.resolve(null), // our lookup misses
+    put: () => Promise.resolve(winner), // but the write loses; winner is authoritative
+  };
+  const provider = new SpyProvider({ tldr: 'loser summary', model: 'loser-model' });
+
+  const res = await analyzeCached(input, { store: racingStore, provider });
+  assertEquals(res.cached, false);
+  assertEquals(res.tldr, 'winner summary', 'must return the stored winner, not our own summary');
+  assertEquals(res.model, 'winner-model');
 });

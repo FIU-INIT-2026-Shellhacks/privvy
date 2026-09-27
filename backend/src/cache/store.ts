@@ -21,6 +21,11 @@ export interface StoredPolicy {
 export interface PolicyStore {
   /** Return the stored analysis for a content hash, or null on a cache miss. */
   get(contentHash: string): Promise<StoredPolicy | null>;
-  /** Persist an analysis. Idempotent on the content_hash primary key. */
-  put(policy: StoredPolicy): Promise<void>;
+  /**
+   * Persist an analysis (idempotent on the content_hash primary key) and return the
+   * row that is now authoritative for that hash. Under a concurrent insert the FIRST
+   * write wins, so the returned row may differ from `policy`; callers should return the
+   * returned row so every caller sees the same canonical summary.
+   */
+  put(policy: StoredPolicy): Promise<StoredPolicy>;
 }
