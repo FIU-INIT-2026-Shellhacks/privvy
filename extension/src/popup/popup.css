@@ -1,0 +1,190 @@
+/* Privvy popup — black & yellow theme. */
+
+:root {
+  --pv-black: #0f0f0f;
+  --pv-surface: #1c1c1c;
+  --pv-surface-2: #262626;
+  --pv-yellow: #ffcc00;
+  --pv-yellow-dim: #d4a900;
+  --pv-text: #f5f5f5;
+  --pv-text-dim: #a0a0a0;
+  --pv-danger: #ff5d5d;
+  --pv-border: #333333;
+  --pv-radius: 8px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  width: 340px;
+  margin: 0;
+  background: var(--pv-black);
+  color: var(--pv-text);
+  font-family: system-ui, -apple-system, sans-serif;
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+.pv-header {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 12px 14px;
+  border-bottom: 2px solid var(--pv-yellow);
+  background: var(--pv-surface);
+}
+
+.pv-logo {
+  font-weight: 700;
+  font-size: 16px;
+  color: var(--pv-yellow);
+  letter-spacing: 0.3px;
+}
+
+.pv-tagline {
+  font-size: 11px;
+  color: var(--pv-text-dim);
+}
+
+.pv-main {
+  padding: 14px;
+  min-height: 90px;
+}
+
+/* Status / message text */
+.pv-status {
+  color: var(--pv-text-dim);
+  margin: 0 0 8px;
+}
+
+.pv-error {
+  color: var(--pv-danger);
+  margin: 0 0 10px;
+}
+
+/* Detected-link list */
+.pv-link-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.pv-link-btn {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 9px 10px;
+  background: var(--pv-surface);
+  color: var(--pv-text);
+  border: 1px solid var(--pv-border);
+  border-radius: var(--pv-radius);
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.pv-link-btn:hover,
+.pv-link-btn:focus-visible {
+  border-color: var(--pv-yellow);
+  outline: none;
+}
+
+.pv-link-text {
+  font-weight: 600;
+  display: block;
+}
+
+.pv-link-url {
+  display: block;
+  color: var(--pv-text-dim);
+  font-size: 11px;
+  word-break: break-all;
+  margin-top: 2px;
+}
+
+/* Primary / secondary buttons */
+.pv-btn {
+  display: inline-block;
+  padding: 8px 14px;
+  border-radius: var(--pv-radius);
+  border: none;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.pv-btn-primary {
+  background: var(--pv-yellow);
+  color: var(--pv-black);
+}
+
+.pv-btn-primary:hover {
+  background: var(--pv-yellow-dim);
+}
+
+.pv-btn-secondary {
+  background: var(--pv-surface-2);
+  color: var(--pv-text);
+  border: 1px solid var(--pv-border);
+}
+
+.pv-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+/* Result panel */
+.pv-tldr {
+  background: var(--pv-surface);
+  border: 1px solid var(--pv-border);
+  border-left: 3px solid var(--pv-yellow);
+  border-radius: var(--pv-radius);
+  padding: 10px 12px;
+  white-space: pre-wrap;
+}
+
+.pv-meta {
+  margin-top: 8px;
+  font-size: 11px;
+  color: var(--pv-text-dim);
+}
+
+.pv-badge {
+  display: inline-block;
+  background: var(--pv-surface-2);
+  color: var(--pv-yellow);
+  border-radius: 4px;
+  padding: 1px 6px;
+  font-size: 10px;
+  margin-left: 6px;
+}
+
+/* Loading spinner */
+.pv-spinner {
+  width: 18px;
+  height: 18px;
+  border: 2px solid var(--pv-surface-2);
+  border-top-color: var(--pv-yellow);
+  border-radius: 50%;
+  animation: pv-spin 0.8s linear infinite;
+  display: inline-block;
+  vertical-align: middle;
+  margin-right: 8px;
+}
+
+@keyframes pv-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pv-spinner {
+    animation: none;
+  }
+}

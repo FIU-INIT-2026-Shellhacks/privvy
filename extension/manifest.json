@@ -1,0 +1,23 @@
+{
+  "manifest_version": 3,
+  "name": "Privvy",
+  "version": "0.1.0",
+  "description": "Understand the privacy policies and terms you agree to. Get a plain-English TLDR.",
+  "action": {
+    "default_title": "Privvy",
+    "default_popup": "src/popup/popup.html"
+  },
+  "background": {
+    "service_worker": "src/background/service-worker.ts",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://*/*"],
+      "js": ["src/content/content-script.ts"],
+      "run_at": "document_idle"
+    }
+  ],
+  "permissions": ["activeTab", "scripting"],
+  "host_permissions": ["https://*/*"]
+}
