@@ -40,6 +40,12 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 
+# --- Word documents (source docs; converted .md is committed instead) ---
+*.docx
+
+# --- Kiro ---
+.kiro/
+
 # --- Editor / OS ---
 .vscode/
 .idea/
