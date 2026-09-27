@@ -76,7 +76,10 @@ export async function handleAnalyze(req: Request, deps: HandlerDeps): Promise<Re
     return new Response(JSON.stringify(success), { status: 200, headers: JSON_HEADERS });
   } catch (err) {
     if (err instanceof LlmError) {
-      return errorResponse(err.code, err.message);
+      // INTERNAL messages can carry server-side detail (e.g. config/DB errors), so never
+      // surface them; other codes (VALIDATION/RATE_LIMIT/UPSTREAM) are safe to relay.
+      const message = err.code === ErrorCode.INTERNAL ? 'Unexpected server error.' : err.message;
+      return errorResponse(err.code, message);
     }
     // Unknown failure: do not leak internals to the client.
     return errorResponse(ErrorCode.INTERNAL, 'Unexpected server error.');

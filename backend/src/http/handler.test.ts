@@ -162,3 +162,27 @@ Deno.test('non-JSON body -> 400 VALIDATION', async () => {
   const res = await handleAnalyze(req, { store: new FakeStore(), provider: new SpyProvider() });
   assertEquals(res.status, 400);
 });
+
+Deno.test('url with embedded credentials -> 400 VALIDATION', async () => {
+  const res = await handleAnalyze(
+    jsonRequest({ text: TEXT, url: 'https://user:pass@example.com/privacy' }),
+    { store: new FakeStore(), provider: new SpyProvider() },
+  );
+  assertEquals(res.status, 400);
+  assertEquals((await res.json()).code, ErrorCode.VALIDATION);
+});
+
+Deno.test('an INTERNAL LlmError does not leak its message to the client', async () => {
+  const provider: LlmProvider = {
+    summarize: () =>
+      Promise.reject(new LlmError(ErrorCode.INTERNAL, 'SUPABASE_URL is not set: secret detail')),
+  };
+  const res = await handleAnalyze(jsonRequest({ text: TEXT, url: URL_OK }), {
+    store: new FakeStore(),
+    provider,
+  });
+  assertEquals(res.status, 500);
+  const body = await res.json();
+  assertEquals(body.code, ErrorCode.INTERNAL);
+  assertEquals(body.error, 'Unexpected server error.');
+});

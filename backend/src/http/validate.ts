@@ -74,6 +74,10 @@ function validateUrl(raw: string): string {
     fail('`url` is not a valid URL.');
   }
   if (parsed.protocol !== 'https:') fail('`url` must use https.');
+  if (parsed.username !== '' || parsed.password !== '') {
+    // Embedded credentials would be stored as source_url and leak secrets (Req 2.7).
+    fail('`url` must not contain credentials.');
+  }
   if (parsed.search !== '' || parsed.hash !== '') {
     fail('`url` must not contain a query string or fragment.');
   }
