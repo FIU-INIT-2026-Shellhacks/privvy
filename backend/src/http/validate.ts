@@ -22,6 +22,7 @@ export interface ValidatedAnalyze {
   contentHash: string;
 }
 
+/** Throw a typed VALIDATION error with the given message (maps to HTTP 400). */
 function fail(message: string): never {
   throw new LlmError(ErrorCode.VALIDATION, message);
 }

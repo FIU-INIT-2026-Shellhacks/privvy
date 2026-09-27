@@ -37,6 +37,7 @@ class SpyProvider implements LlmProvider {
   }
 }
 
+/** Build a POST application/json Request for the analyze handler under test. */
 function jsonRequest(body: unknown): Request {
   return new Request('https://fn/analyze', {
     method: 'POST',
