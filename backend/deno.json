@@ -1,0 +1,14 @@
+{
+  "imports": {
+    "@std/assert": "jsr:@std/assert@^1.0.0"
+  },
+  "lint": {
+    "rules": {
+      "tags": ["recommended"]
+    }
+  },
+  "fmt": {
+    "singleQuote": true,
+    "lineWidth": 100
+  }
+}
