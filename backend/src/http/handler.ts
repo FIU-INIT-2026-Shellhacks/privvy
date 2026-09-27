@@ -44,13 +44,44 @@ export interface HandlerDeps {
    * validation or provider work and blocked with RATE_LIMIT (429) when over the limit.
    * Omitted in unit tests that are not exercising the limiter.
    */
-  rateLimit?: { store: CounterStore; config: RateLimitConfig; now?: () => number };
+  rateLimit?: { store: CounterStore; config: RateLimitConfig; secret: string; now?: () => number };
 }
 
 const JSON_HEADERS = { 'content-type': 'application/json' } as const;
 
 /** Handle a single /analyze request and return a fully-formed Response. */
 export async function handleAnalyze(req: Request, deps: HandlerDeps): Promise<Response> {
+  // Per-IP rate limit FIRST — before the method/content-type gates and any body work —
+  // so the limit applies to EVERY analyze request (a malformed request still counts) and
+  // an over-limit caller gets 429, not a validation error. A limiter failure is non-fatal
+  // (fail open): an outage of the counter store degrades abuse protection but never takes
+  // the endpoint down.
+  if (deps.rateLimit) {
+    const ip = clientIp(req);
+    // Missing address policy: if we cannot identify the caller, do NOT bucket everyone
+    // into a single shared counter (one abuser would 429 all header-less callers). Skip
+    // the limit for that request instead. On Supabase's edge x-forwarded-for is present,
+    // so this only affects unusual/misconfigured ingress.
+    if (ip !== null) {
+      try {
+        const decision = await checkRateLimit(ip, deps.rateLimit.config, {
+          store: deps.rateLimit.store,
+          secret: deps.rateLimit.secret,
+          now: deps.rateLimit.now,
+        });
+        if (!decision.allowed) {
+          return errorResponse(
+            ErrorCode.RATE_LIMIT,
+            'Too many requests, try again shortly.',
+            { 'retry-after': String(decision.retryAfterSeconds) },
+          );
+        }
+      } catch {
+        // Fail open: proceed without the limit rather than 500 the request.
+      }
+    }
+  }
+
   // Method + content-type gate (VALIDATION -> 400).
   if (req.method !== 'POST') {
     return errorResponse(ErrorCode.VALIDATION, 'Method not allowed; use POST.');
@@ -58,28 +89,6 @@ export async function handleAnalyze(req: Request, deps: HandlerDeps): Promise<Re
   const contentType = req.headers.get('content-type') ?? '';
   if (!contentType.toLowerCase().includes('application/json')) {
     return errorResponse(ErrorCode.VALIDATION, 'Content-Type must be application/json.');
-  }
-
-  // Per-IP rate limit BEFORE parsing/validation/provider work, so abusive callers are
-  // cheap to reject. A limiter failure is non-fatal (fail open) — an outage of the
-  // counter store degrades abuse protection but never takes the endpoint down.
-  if (deps.rateLimit) {
-    const ip = clientIp(req);
-    try {
-      const decision = await checkRateLimit(ip, deps.rateLimit.config, {
-        store: deps.rateLimit.store,
-        now: deps.rateLimit.now,
-      });
-      if (!decision.allowed) {
-        return errorResponse(
-          ErrorCode.RATE_LIMIT,
-          'Too many requests, try again shortly.',
-          { 'retry-after': String(decision.retryAfterSeconds) },
-        );
-      }
-    } catch {
-      // Fail open: proceed without the limit rather than 500 the request.
-    }
   }
 
   let body: unknown;
@@ -130,15 +139,17 @@ function errorResponse(
 }
 
 /**
- * Best-effort client IP from x-forwarded-for (Supabase edge sets it; first hop is the
- * caller). Falls back to a constant so a missing header buckets together rather than
- * throwing. Only ever hashed downstream — never stored raw.
+ * Client IP from x-forwarded-for (Supabase edge sets it; first hop is the caller) or
+ * x-real-ip. Returns null when neither is present, so the caller can skip the limit
+ * rather than bucket all header-less callers into one shared counter. Only ever hashed
+ * downstream — never stored raw.
  */
-function clientIp(req: Request): string {
+function clientIp(req: Request): string | null {
   const xff = req.headers.get('x-forwarded-for');
   if (xff) {
     const first = xff.split(',')[0]?.trim();
     if (first) return first;
   }
-  return req.headers.get('x-real-ip')?.trim() || 'unknown';
+  const real = req.headers.get('x-real-ip')?.trim();
+  return real || null;
 }

@@ -1,17 +1,19 @@
 /**
  * Per-IP rate limiter (Task 7).
  *
- * Fixed-window counter keyed by a HASH of the caller IP (never the raw IP), with the
- * window doubling as the retention TTL. Pure/injectable: the counter store, clock, and
- * bounds are all passed in, so tests are deterministic and offline.
+ * Fixed-window counter keyed by a keyed HMAC of the caller IP (never the raw IP), with
+ * the window doubling as the retention TTL. Pure/injectable: the counter store, clock,
+ * secret, and bounds are all passed in, so tests are deterministic and offline.
  *
- * Privacy Position scoping: the caller IP is processed ONLY here, only as a salted-ish
- * SHA-256 hash used as a counter key, and only for the window duration. No raw IP is
- * stored; nothing is retained past the window. This is the single place IP is touched
- * and is explicitly outside the product's no-user-data guarantee (see design/req).
+ * Privacy Position scoping: the caller IP is processed ONLY here, only as an HMAC-SHA256
+ * digest used as a counter key, and only for the window duration. The HMAC uses a
+ * server-held secret so stored keys cannot be reverse-mapped to IPs by brute-forcing the
+ * small IPv4 space (CodeRabbit: a plain unkeyed hash would be reversible). No raw IP is
+ * stored; nothing is retained past the window. This is the single place IP is touched and
+ * is explicitly outside the product's no-user-data guarantee (see design/req).
  */
 
-import { sha256Hex } from '../../../shared/dist/normalize.js';
+import type { CounterStore } from './store.ts';
 
 export interface RateLimitConfig {
   /** Window length in milliseconds. */
@@ -30,24 +32,44 @@ export interface RateLimitDecision {
 }
 
 export interface RateLimiterDeps {
-  store: import('./store.ts').CounterStore;
+  store: CounterStore;
+  /** Server-held secret for the keyed IP HMAC. */
+  secret: string;
   /** Returns current time in unix ms. Injectable for deterministic tests. */
   now?: () => number;
 }
 
-/**
- * Hash an IP into an opaque counter key. Prefixed so it is obviously not a raw IP and
- * cannot collide with other key spaces. The value stored/compared is only this hash.
- */
-export async function ipKey(ip: string): Promise<string> {
-  const digest = await sha256Hex(`privvy-rl:${ip}`);
-  return `rl_${digest}`;
+/** Lowercase hex encoding of a byte buffer. */
+function toHex(buffer: ArrayBuffer): string {
+  const bytes = new Uint8Array(buffer);
+  let hex = '';
+  for (const b of bytes) hex += b.toString(16).padStart(2, '0');
+  return hex;
 }
 
 /**
- * Evaluate one request from `ip` against the limit. Increments the hashed-IP counter and
+ * Hash an IP into an opaque counter key using HMAC-SHA256 with a server-held secret.
+ * Prefixed `rl_` so it is obviously not a raw IP. Because the digest is keyed, an
+ * attacker who obtains stored keys cannot brute-force the (small) IPv4 space to recover
+ * the originating IP without also knowing the secret.
+ */
+export async function ipKey(ip: string, secret: string): Promise<string> {
+  const enc = new TextEncoder();
+  const cryptoKey = await crypto.subtle.importKey(
+    'raw',
+    enc.encode(secret),
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign'],
+  );
+  const sig = await crypto.subtle.sign('HMAC', cryptoKey, enc.encode(`privvy-rl:${ip}`));
+  return `rl_${toHex(sig)}`;
+}
+
+/**
+ * Evaluate one request from `ip` against the limit. Increments the keyed-IP counter and
  * returns whether the request is allowed. The store enforces the fixed window; this
- * function owns the hashing and the allow/deny math.
+ * function owns the keyed hashing and the allow/deny math.
  */
 export async function checkRateLimit(
   ip: string,
@@ -56,7 +78,7 @@ export async function checkRateLimit(
 ): Promise<RateLimitDecision> {
   const now = deps.now ?? (() => Date.now());
   const nowMs = now();
-  const key = await ipKey(ip);
+  const key = await ipKey(ip, deps.secret);
 
   const { count, windowStart } = await deps.store.increment(key, config.windowMs, nowMs);
 
