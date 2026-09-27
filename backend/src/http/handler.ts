@@ -24,7 +24,8 @@ import type { CounterStore } from '../ratelimit/store.ts';
  * type-only import here; the JSON produced is identical to AnalyzeSuccess/AnalyzeError.
  */
 interface AnalyzeSuccess {
-  tldr: string;
+  flags: string[];
+  summary: string;
   model: string;
   cached: boolean;
   contentHash: string;
@@ -107,7 +108,8 @@ export async function handleAnalyze(req: Request, deps: HandlerDeps): Promise<Re
     );
 
     const success: AnalyzeSuccess = {
-      tldr: result.tldr,
+      flags: result.flags,
+      summary: result.summary,
       model: result.model,
       cached: result.cached,
       contentHash: result.contentHash,

@@ -17,11 +17,13 @@ import { ErrorCode } from '../../../shared/dist/errors.js';
 /** The set of error codes, derived from the shared value (see errors.ts). */
 type ErrorCodeValue = (typeof ErrorCode)[keyof typeof ErrorCode];
 
-/** Result of a successful summarization. */
+/** Result of a successful analysis. */
 export interface Summary {
-  /** Plain-English TLDR of the policy text. */
-  tldr: string;
-  /** The model that produced the TLDR (value of GEMINI_MODEL at call time). */
+  /** Danger flags: checklist items the policy triggers, as short plain statements. */
+  flags: string[];
+  /** Short plain-English summary (no markdown), at most ~5 lines. */
+  summary: string;
+  /** The model that produced the analysis (value of GEMINI_MODEL at call time). */
   model: string;
 }
 

@@ -29,7 +29,7 @@ export type ToWorkerMessage =
 /** Messages the service worker returns to the popup. */
 export type FromWorkerMessage =
   | { type: 'LINKS'; links: DetectedLink[] }
-  | { type: 'ANALYSIS'; tldr: string; model: string; cached: boolean }
+  | { type: 'ANALYSIS'; flags: string[]; summary: string; model: string; cached: boolean }
   | {
       type: 'ERROR';
       message: string;
