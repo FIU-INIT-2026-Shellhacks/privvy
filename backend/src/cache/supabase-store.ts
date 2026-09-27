@@ -18,7 +18,8 @@ const TABLE = 'policies';
 interface PolicyRow {
   content_hash: string;
   source_url: string;
-  tldr: string;
+  flags: string[];
+  summary: string;
   model: string;
 }
 
@@ -70,7 +71,7 @@ export class SupabasePolicyStore implements PolicyStore {
   async get(contentHash: string): Promise<StoredPolicy | null> {
     const { data, error } = await this.#client
       .from(TABLE)
-      .select('content_hash, source_url, tldr, model')
+      .select('content_hash, source_url, flags, summary, model')
       .eq('content_hash', contentHash)
       .maybeSingle<PolicyRow>();
 
@@ -81,7 +82,8 @@ export class SupabasePolicyStore implements PolicyStore {
     return {
       contentHash: data.content_hash,
       sourceUrl: data.source_url,
-      tldr: data.tldr,
+      flags: Array.isArray(data.flags) ? data.flags : [],
+      summary: data.summary,
       model: data.model,
     };
   }
@@ -92,7 +94,8 @@ export class SupabasePolicyStore implements PolicyStore {
     const row: PolicyRow = {
       content_hash: policy.contentHash,
       source_url: policy.sourceUrl,
-      tldr: policy.tldr,
+      flags: policy.flags,
+      summary: policy.summary,
       model: policy.model,
     };
     const { error } = await this.#client
