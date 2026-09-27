@@ -18,13 +18,24 @@ import { ENV, RATE_LIMIT_DEFAULTS } from '../../../shared/dist/config.js';
 
 const env = (name: string): string | undefined => Deno.env.get(name);
 
+/**
+ * Parse an env var as a FINITE POSITIVE INTEGER, else fall back to `fallback`. Plain
+ * `Number(x) || fallback` would accept negatives/fractions (e.g. RATE_LIMIT_MAX=-1),
+ * which makes `count > maxRequests` always true and 429s every request — a
+ * misconfiguration must not turn the limiter into a total outage.
+ */
+function positiveIntEnv(name: string, fallback: number): number {
+  const parsed = Number(env(name));
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
 const store = new SupabasePolicyStore();
 const provider = new GeminiProvider();
 
 // Rate-limit config from env, falling back to the shared defaults. The window env is in
 // SECONDS (see .env.example); convert to ms for the limiter.
-const windowSeconds = Number(env(ENV.RATE_LIMIT_WINDOW)) || RATE_LIMIT_DEFAULTS.WINDOW_SECONDS;
-const maxRequests = Number(env(ENV.RATE_LIMIT_MAX)) || RATE_LIMIT_DEFAULTS.MAX_REQUESTS;
+const windowSeconds = positiveIntEnv(ENV.RATE_LIMIT_WINDOW, RATE_LIMIT_DEFAULTS.WINDOW_SECONDS);
+const maxRequests = positiveIntEnv(ENV.RATE_LIMIT_MAX, RATE_LIMIT_DEFAULTS.MAX_REQUESTS);
 // Server-held secret for the keyed IP HMAC. If unset, fall back to the service-role key
 // (also server-only and non-guessable) so the limiter is never silently unkeyed.
 const rateLimitSecret = env('RATE_LIMIT_SECRET') || env('SUPABASE_SERVICE_ROLE_KEY') || '';
