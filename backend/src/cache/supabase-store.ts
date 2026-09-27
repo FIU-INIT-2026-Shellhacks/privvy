@@ -50,6 +50,18 @@ export class SupabasePolicyStore implements PolicyStore {
         'SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY must be set for the policy store.',
       );
     }
+    // The service_role credential is highly privileged, so refuse to send it over an
+    // insecure or non-URL endpoint even if the injected env is misconfigured. The
+    // Supabase Edge runtime provides an https SUPABASE_URL; anything else is rejected.
+    let parsed: URL;
+    try {
+      parsed = new URL(url);
+    } catch {
+      throw new LlmError(ErrorCode.INTERNAL, 'SUPABASE_URL is not a valid URL.');
+    }
+    if (parsed.protocol !== 'https:') {
+      throw new LlmError(ErrorCode.INTERNAL, 'SUPABASE_URL must use https.');
+    }
     this.#client = createClient(url, key, {
       auth: { persistSession: false, autoRefreshToken: false },
     });
