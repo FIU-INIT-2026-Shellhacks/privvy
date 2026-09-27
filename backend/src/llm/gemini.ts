@@ -11,6 +11,7 @@
 
 import { ErrorCode } from '../../../shared/dist/errors.js';
 import { ENV } from '../../../shared/dist/config.js';
+import { RISK_CHECKLIST } from '../../../shared/dist/checklist.js';
 import { LlmError, type LlmProvider, type Summary } from './provider.ts';
 
 const GEMINI_BASE = 'https://generativelanguage.googleapis.com/v1beta/models';
@@ -21,6 +22,12 @@ interface GenerateContentResponse {
   candidates?: Array<{
     content?: { parts?: Array<{ text?: string }> };
   }>;
+}
+
+/** The structured JSON we ask Gemini to return (and validate on the way back). */
+interface AnalysisJson {
+  flags?: unknown;
+  summary?: unknown;
 }
 
 export interface GeminiProviderOptions {
@@ -67,6 +74,18 @@ export class GeminiProvider implements LlmProvider {
     const url = `${GEMINI_BASE}/${encodeURIComponent(model)}:generateContent`;
     const body = JSON.stringify({
       contents: [{ parts: [{ text: buildPrompt(policyText) }] }],
+      // Ask for structured JSON so we get { flags, summary } reliably, not prose/markdown.
+      generationConfig: {
+        responseMimeType: 'application/json',
+        responseSchema: {
+          type: 'object',
+          properties: {
+            flags: { type: 'array', items: { type: 'string' } },
+            summary: { type: 'string' },
+          },
+          required: ['flags', 'summary'],
+        },
+      },
     });
 
     const controller = new AbortController();
@@ -112,13 +131,30 @@ export class GeminiProvider implements LlmProvider {
         );
       }
 
-      const tldr = (json as GenerateContentResponse).candidates?.[0]?.content?.parts?.[0]?.text
+      const rawText = (json as GenerateContentResponse).candidates?.[0]?.content?.parts?.[0]?.text
         ?.trim();
-      if (!tldr) {
+      if (!rawText) {
         throw new LlmError(ErrorCode.UPSTREAM, 'Gemini response contained no text.', json);
       }
 
-      return { tldr, model };
+      // The response text is JSON (responseMimeType), but validate it defensively.
+      let parsed: AnalysisJson;
+      try {
+        parsed = JSON.parse(rawText) as AnalysisJson;
+      } catch (err) {
+        throw new LlmError(ErrorCode.UPSTREAM, 'Gemini returned unparseable analysis JSON.', err);
+      }
+
+      const flags = Array.isArray(parsed.flags)
+        ? parsed.flags.filter((f): f is string => typeof f === 'string' && f.trim().length > 0)
+            .map((f) => f.trim())
+        : [];
+      const summary = typeof parsed.summary === 'string' ? parsed.summary.trim() : '';
+      if (!summary) {
+        throw new LlmError(ErrorCode.UPSTREAM, 'Gemini analysis had no summary.', parsed);
+      }
+
+      return { flags, summary, model };
     } catch (err) {
       // Re-throw our typed errors unchanged; wrap everything else (network failure,
       // abort/timeout) as UPSTREAM.
@@ -130,13 +166,34 @@ export class GeminiProvider implements LlmProvider {
   }
 }
 
-/** Wraps the policy text in the summarization instruction. */
+/**
+ * Build the analysis prompt: check the policy against the fixed risk checklist and
+ * return danger flags plus a short summary. Danger-focused (lead with risks), plain
+ * text only (no markdown), summary capped at ~5 lines.
+ */
 function buildPrompt(policyText: string): string {
+  const checklist = RISK_CHECKLIST.map((item) => `- ${item.label}: ${item.criterion}`).join('\n');
   return [
-    'Summarize the following privacy policy or terms document in plain English.',
-    'Focus on what data is collected, how it is used and shared, and user rights.',
-    'Be concise and neutral. Do not add information that is not in the text.',
+    'You are Privvy, a privacy watchdog. Analyze the privacy policy or terms document',
+    'below and warn the user about risks BEFORE they agree to it. Focus on danger, not',
+    'a neutral overview.',
     '',
+    'Check the document against this fixed risk checklist. Include a flag ONLY when the',
+    'document genuinely triggers that item based on its actual text:',
+    checklist,
+    '',
+    'Return JSON with exactly two fields:',
+    '- "flags": an array of short plain-English danger statements, one per checklist item',
+    '  that applies. Phrase each as a direct warning to the user (e.g. "This site sells',
+    '  your data to third parties", "You cannot opt out of tracking"). If nothing risky',
+    '  applies, return an empty array.',
+    '- "summary": a plain-English overview of at most 5 short lines. No markdown, no',
+    '  bullet characters, no asterisks — plain sentences only. Lead with what matters',
+    '  most to the user\'s privacy.',
+    '',
+    'Do not invent anything not supported by the document text. Plain text only.',
+    '',
+    'DOCUMENT:',
     policyText,
   ].join('\n');
 }

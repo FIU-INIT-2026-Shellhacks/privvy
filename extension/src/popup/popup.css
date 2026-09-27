@@ -29,23 +29,17 @@ body {
 
 .pv-header {
   display: flex;
-  align-items: baseline;
-  gap: 8px;
-  padding: 12px 14px;
+  align-items: center;
+  padding: 10px 14px;
   border-bottom: 2px solid var(--pv-yellow);
   background: var(--pv-surface);
 }
 
-.pv-logo {
-  font-weight: 700;
-  font-size: 16px;
-  color: var(--pv-yellow);
-  letter-spacing: 0.3px;
-}
-
-.pv-tagline {
-  font-size: 11px;
-  color: var(--pv-text-dim);
+.pv-logo-img {
+  display: block;
+  height: 34px;
+  width: auto;
+  /* The wordmark is a light logo on transparent bg; the dark header carries it. */
 }
 
 .pv-main {
@@ -138,14 +132,74 @@ body {
   margin-top: 12px;
 }
 
-/* Result panel */
-.pv-tldr {
+/* Result: section titles */
+.pv-section-title {
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--pv-yellow);
+  margin: 4px 0 6px;
+}
+
+/* Flags — the danger list */
+.pv-flag-list {
+  list-style: none;
+  margin: 0 0 12px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.pv-flag {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  background: var(--pv-surface);
+  border: 1px solid var(--pv-border);
+  border-left: 3px solid var(--pv-danger);
+  border-radius: var(--pv-radius);
+  padding: 8px 10px;
+}
+
+.pv-flag-mark {
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--pv-danger);
+  color: #0f0f0f;
+  font-weight: 800;
+  font-size: 11px;
+  line-height: 16px;
+  text-align: center;
+}
+
+.pv-flag-text {
+  font-size: 13px;
+}
+
+.pv-no-flags {
+  margin: 0 0 12px;
+  padding: 8px 10px;
   background: var(--pv-surface);
   border: 1px solid var(--pv-border);
   border-left: 3px solid var(--pv-yellow);
   border-radius: var(--pv-radius);
+  color: var(--pv-text);
+  font-size: 13px;
+}
+
+/* Summary */
+.pv-summary {
+  margin: 0;
+  background: var(--pv-surface);
+  border: 1px solid var(--pv-border);
+  border-radius: var(--pv-radius);
   padding: 10px 12px;
   white-space: pre-wrap;
+  font-size: 13px;
 }
 
 .pv-meta {

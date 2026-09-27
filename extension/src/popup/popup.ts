@@ -72,11 +72,30 @@ function renderLinks(links: DetectedLink[]): void {
   main.appendChild(list);
 }
 
-function renderResult(tldr: string, model: string, cached: boolean): void {
+function renderResult(flags: string[], summary: string, model: string, cached: boolean): void {
   clear();
-  const panel = el('div', 'pv-tldr', tldr);
-  main.appendChild(panel);
-  const meta = el('p', 'pv-meta', `Summarized by ${model}`);
+
+  // Flags section — the danger list, shown first (the point of the tool).
+  const flagsHeading = el('h2', 'pv-section-title', 'Flags');
+  main.appendChild(flagsHeading);
+  if (flags.length === 0) {
+    main.appendChild(el('p', 'pv-no-flags', 'No major red flags found.'));
+  } else {
+    const list = el('ul', 'pv-flag-list');
+    for (const flag of flags) {
+      const li = el('li', 'pv-flag');
+      li.appendChild(el('span', 'pv-flag-mark', '!'));
+      li.appendChild(el('span', 'pv-flag-text', flag));
+      list.appendChild(li);
+    }
+    main.appendChild(list);
+  }
+
+  // Summary section.
+  main.appendChild(el('h2', 'pv-section-title', 'Summary'));
+  main.appendChild(el('p', 'pv-summary', summary));
+
+  const meta = el('p', 'pv-meta', `Analyzed by ${model}`);
   if (cached) {
     meta.appendChild(el('span', 'pv-badge', 'from cache'));
   }
@@ -115,7 +134,7 @@ async function startAnalysis(url: string): Promise<void> {
     return;
   }
   if (reply.type === 'ANALYSIS') {
-    renderResult(reply.tldr, reply.model, reply.cached);
+    renderResult(reply.flags, reply.summary, reply.model, reply.cached);
   } else if (reply.type === 'ERROR') {
     renderError(reply.message, reply.retryable, url);
   } else {

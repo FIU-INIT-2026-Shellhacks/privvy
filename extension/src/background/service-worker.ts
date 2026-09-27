@@ -52,7 +52,8 @@ async function analyze(url: string): Promise<FromWorkerMessage> {
   if (outcome.ok) {
     return {
       type: 'ANALYSIS',
-      tldr: outcome.result.tldr,
+      flags: outcome.result.flags,
+      summary: outcome.result.summary,
       model: outcome.result.model,
       cached: outcome.result.cached,
     };

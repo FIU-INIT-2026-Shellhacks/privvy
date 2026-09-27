@@ -12,9 +12,11 @@ export interface StoredPolicy {
   contentHash: string;
   /** Sanitized source URL (origin + path only). */
   sourceUrl: string;
-  /** Plain-English TLDR. */
-  tldr: string;
-  /** Model that produced the TLDR. */
+  /** Danger flags: checklist items the policy triggers. */
+  flags: string[];
+  /** Short plain-English summary. */
+  summary: string;
+  /** Model that produced the analysis. */
   model: string;
 }
 

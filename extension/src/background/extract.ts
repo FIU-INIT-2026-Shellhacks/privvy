@@ -17,12 +17,7 @@ export type ExtractionResult =
   | { ok: true; text: string; finalUrl: string }
   | {
       ok: false;
-      code:
-        | 'UNSUPPORTED_FORMAT'
-        | 'EXTRACTION_FAILED'
-        | 'SSRF_BLOCKED'
-        | 'REDIRECT_BLOCKED'
-        | 'FETCH_FAILED';
+      code: 'UNSUPPORTED_FORMAT' | 'EXTRACTION_FAILED' | 'SSRF_BLOCKED' | 'FETCH_FAILED';
       message: string;
     };
 
@@ -30,22 +25,23 @@ export type ExtractionResult =
 const NON_CONTENT_SELECTORS = 'script, style, nav, header, footer, aside, noscript, template';
 
 /**
- * Fetch a policy URL, SSRF-validating the initial URL and the final landing URL.
+ * Fetch a policy URL, following redirects, and SSRF-validate the initial and final URLs.
  *
- * Redirect handling (SSRF): with `redirect: 'follow'` the browser sends requests
- * to every intermediate hop before we can inspect them, and intermediate hops are
- * unobservable from JS (a manual redirect is opaque — its `Location` is unreadable).
- * So we cannot validate each hop. Instead, for the MVP we DO NOT follow redirects
- * at all: we fetch with `redirect: 'manual'` and treat any redirect as a hard stop.
- * This closes the "public page 302s to https://192.168.x.x" SSRF vector entirely,
- * at the cost of rejecting legitimate policy pages that redirect (a documented MVP
- * limitation). The user-selected URL is still validated up front.
+ * Redirect handling (SSRF): real policy pages redirect heavily (locale/consent/CDN
+ * hops), and refusing redirects breaks the feature on most real sites. So we follow
+ * redirects (`redirect: 'follow'`, constrained to https by the extension's host
+ * permissions) and validate the two URLs we CAN see: the user-selected URL up front,
+ * and `response.url` (the final landing URL) afterward — rejecting either if it is a
+ * loopback/link-local/private host. Intermediate hops are not observable from JS (an
+ * opaque redirect hides its Location), so they are not individually validated; this is
+ * a documented residual risk, acceptable because the target is public policy text and
+ * both observable endpoints are checked against the hardened classifier.
  */
 async function fetchWithGuardedRedirects(
   startUrl: string,
 ): Promise<
   | { ok: true; response: Response; finalUrl: string }
-  | { ok: false; code: 'SSRF_BLOCKED' | 'REDIRECT_BLOCKED' | 'FETCH_FAILED'; message: string }
+  | { ok: false; code: 'SSRF_BLOCKED' | 'FETCH_FAILED'; message: string }
 > {
   // Validate the initial (user-selected) URL before fetching.
   const initial = validatePolicyUrl(startUrl);
@@ -55,24 +51,20 @@ async function fetchWithGuardedRedirects(
 
   let response: Response;
   try {
-    // `redirect: 'manual'`: a redirect surfaces as an opaque response (type
-    // 'opaqueredirect' / status 0) rather than being followed, so we can detect
-    // and refuse it without ever fetching the redirect target.
-    response = await fetch(initial.url, { redirect: 'manual', credentials: 'omit' });
+    response = await fetch(initial.url, { redirect: 'follow', credentials: 'omit' });
   } catch {
     return { ok: false, code: 'FETCH_FAILED', message: "Couldn't fetch that page." };
   }
 
-  // Any redirect -> refuse (we do not follow, to avoid an unvalidated hop).
-  if (response.type === 'opaqueredirect' || (response.status >= 300 && response.status < 400)) {
-    return {
-      ok: false,
-      code: 'REDIRECT_BLOCKED',
-      message: 'That link redirects elsewhere; open the final policy page directly and try again.',
-    };
+  // Re-validate the final landing URL after any redirects the browser followed.
+  // `response.url` reflects the final URL; fall back to the initial if it is empty.
+  const finalCandidate = response.url || initial.url;
+  const finalCheck = validatePolicyUrl(finalCandidate);
+  if (!finalCheck.ok) {
+    return { ok: false, code: 'SSRF_BLOCKED', message: rejectionMessage(finalCheck.reason) };
   }
 
-  return { ok: true, response, finalUrl: initial.url };
+  return { ok: true, response, finalUrl: finalCheck.url };
 }
 
 /**

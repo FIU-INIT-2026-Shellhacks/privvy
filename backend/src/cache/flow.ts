@@ -24,7 +24,8 @@ import type { PolicyStore } from './store.ts';
 /** A resolved analysis plus whether it came from the cache. */
 export interface AnalysisResult {
   contentHash: string;
-  tldr: string;
+  flags: string[];
+  summary: string;
   model: string;
   cached: boolean;
 }
@@ -74,25 +75,27 @@ export async function analyzeCached(
     // HIT: no provider call (Req 4.2).
     return {
       contentHash: hit.contentHash,
-      tldr: hit.tldr,
+      flags: hit.flags,
+      summary: hit.summary,
       model: hit.model,
       cached: true,
     };
   }
 
   // MISS: summarize once (Req 4.3). If this throws, nothing is stored.
-  const { tldr, model } = await provider.summarize(text);
+  const { flags, summary, model } = await provider.summarize(text);
 
   // Persist and adopt the row that is now authoritative for this hash. Under a concurrent
   // miss on the same hash, the FIRST insert wins; `put` returns that stored row, so this
   // request (and every later cache hit) returns the same canonical summary rather than
   // this request's own in-memory one (semantic/CodeRabbit review: concurrent-insert
   // consistency).
-  const stored = await store.put({ contentHash, sourceUrl, tldr, model });
+  const stored = await store.put({ contentHash, sourceUrl, flags, summary, model });
 
   return {
     contentHash: stored.contentHash,
-    tldr: stored.tldr,
+    flags: stored.flags,
+    summary: stored.summary,
     model: stored.model,
     cached: false,
   };

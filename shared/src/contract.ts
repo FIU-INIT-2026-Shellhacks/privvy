@@ -20,10 +20,19 @@ export interface AnalyzeRequest {
   contentHash?: string;
 }
 
-/** Successful /analyze response. */
+/**
+ * Successful /analyze response.
+ *
+ * `flags` are the privacy risks the policy triggers, checked against the fixed
+ * checklist (see RISK_CHECKLIST), phrased as short plain-English danger statements.
+ * `summary` is a brief plain-text overview (no markdown), at most a few lines.
+ */
 export interface AnalyzeSuccess {
-  tldr: string;
-  /** The model that produced the TLDR (value of GEMINI_MODEL at generation time). */
+  /** Danger flags: checklist items the policy triggers, as plain statements. May be empty. */
+  flags: string[];
+  /** Short plain-English summary (no markdown), at most ~5 lines. */
+  summary: string;
+  /** The model that produced the analysis (value of GEMINI_MODEL at generation time). */
   model: string;
   /** True when served from the cache (no fresh Gemini call). */
   cached: boolean;
