@@ -40,8 +40,7 @@ export class GeminiProvider implements LlmProvider {
   constructor(opts: GeminiProviderOptions = {}) {
     // Fall back to Deno.env only if no reader is injected, so this module can be
     // imported and unit-tested without a Deno global present.
-    this.#getEnv =
-      opts.getEnv ??
+    this.#getEnv = opts.getEnv ??
       ((name: string) =>
         (globalThis as { Deno?: { env: { get(n: string): string | undefined } } }).Deno?.env.get(
           name,
@@ -73,9 +72,12 @@ export class GeminiProvider implements LlmProvider {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.#timeoutMs);
 
-    let res: Response;
+    // Keep the timeout armed across BOTH the fetch AND the body read: fetch resolves
+    // once headers arrive, but res.json()/safeText read the body afterward. Clearing
+    // the timer too early would let a stalled body hang summarize() forever. One
+    // try/finally wraps everything so the abort still rejects a stalled body read.
     try {
-      res = await this.#fetch(url, {
+      const res = await this.#fetch(url, {
         method: 'POST',
         headers: {
           'content-type': 'application/json',
@@ -85,36 +87,46 @@ export class GeminiProvider implements LlmProvider {
         body,
         signal: controller.signal,
       });
+
+      if (!res.ok) {
+        // Read the body for server-side diagnostics only; never surface it to clients.
+        const detail = await safeText(res);
+        throw new LlmError(ErrorCode.UPSTREAM, `Gemini returned HTTP ${res.status}.`, detail);
+      }
+
+      let json: unknown;
+      try {
+        json = await res.json();
+      } catch (err) {
+        throw new LlmError(ErrorCode.UPSTREAM, 'Gemini returned a non-JSON response.', err);
+      }
+
+      // Guard the response shape before property access: res.json() may return a valid
+      // JSON `null` (or a non-object), which would otherwise throw a raw TypeError that
+      // escapes the LlmError mapping.
+      if (json === null || typeof json !== 'object') {
+        throw new LlmError(
+          ErrorCode.UPSTREAM,
+          'Gemini returned an unexpected response shape.',
+          json,
+        );
+      }
+
+      const tldr = (json as GenerateContentResponse).candidates?.[0]?.content?.parts?.[0]?.text
+        ?.trim();
+      if (!tldr) {
+        throw new LlmError(ErrorCode.UPSTREAM, 'Gemini response contained no text.', json);
+      }
+
+      return { tldr, model };
     } catch (err) {
-      // Network failure or timeout (abort) -> upstream.
+      // Re-throw our typed errors unchanged; wrap everything else (network failure,
+      // abort/timeout) as UPSTREAM.
+      if (err instanceof LlmError) throw err;
       throw new LlmError(ErrorCode.UPSTREAM, 'Gemini request failed or timed out.', err);
     } finally {
       clearTimeout(timer);
     }
-
-    if (!res.ok) {
-      // Read the body for server-side diagnostics only; do not surface it to clients.
-      const detail = await safeText(res);
-      throw new LlmError(
-        ErrorCode.UPSTREAM,
-        `Gemini returned HTTP ${res.status}.`,
-        detail,
-      );
-    }
-
-    let json: GenerateContentResponse;
-    try {
-      json = (await res.json()) as GenerateContentResponse;
-    } catch (err) {
-      throw new LlmError(ErrorCode.UPSTREAM, 'Gemini returned a non-JSON response.', err);
-    }
-
-    const tldr = json.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
-    if (!tldr) {
-      throw new LlmError(ErrorCode.UPSTREAM, 'Gemini response contained no text.', json);
-    }
-
-    return { tldr, model };
   }
 }
 
