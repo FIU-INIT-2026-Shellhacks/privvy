@@ -63,14 +63,24 @@ async function analyze(url: string): Promise<FromWorkerMessage> {
 chrome.runtime.onMessage.addListener((message: ToWorkerMessage, _sender, sendResponse) => {
   switch (message.type) {
     case 'DETECT': {
-      detectInTab(message.tabId).then((links) => {
-        const response: FromWorkerMessage = { type: 'LINKS', links };
-        sendResponse(response);
-      });
+      detectInTab(message.tabId)
+        .then((links) => {
+          const response: FromWorkerMessage = { type: 'LINKS', links };
+          sendResponse(response);
+        })
+        .catch(() => {
+          sendResponse({ type: 'ERROR', message: "Couldn't scan this page.", retryable: true });
+        });
       return true; // async response
     }
     case 'ANALYZE': {
-      analyze(message.url).then(sendResponse);
+      // Always respond, even if analyze() rejects unexpectedly (e.g. crypto.subtle
+      // throwing), so the popup never hangs waiting on the channel.
+      analyze(message.url)
+        .then(sendResponse)
+        .catch(() => {
+          sendResponse({ type: 'ERROR', message: 'Something went wrong analyzing this page.', retryable: true });
+        });
       return true; // async response
     }
     default:

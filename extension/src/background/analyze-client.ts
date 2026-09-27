@@ -75,7 +75,14 @@ async function attempt(body: AnalyzeRequest): Promise<AttemptResult> {
   }
 
   if (!isAnalyzeError(parsed)) {
-    return { kind: 'success', result: parsed };
+    // Only trust a non-error JSON body as success when the HTTP status is OK.
+    // A 4xx/5xx that returns JSON without an `error` key (e.g. a proxy/gateway
+    // error page) must NOT be read as an AnalyzeSuccess with an undefined tldr.
+    if (res.ok) {
+      return { kind: 'success', result: parsed };
+    }
+    if (res.status >= 500) return { kind: 'transient', message: 'Analysis failed.' };
+    return { kind: 'terminal', message: 'Unexpected response from Privvy.', retryable: false };
   }
 
   // Typed error: decide retryability by code.

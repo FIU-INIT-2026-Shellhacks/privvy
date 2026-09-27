@@ -17,7 +17,12 @@ export type ExtractionResult =
   | { ok: true; text: string; finalUrl: string }
   | {
       ok: false;
-      code: 'UNSUPPORTED_FORMAT' | 'EXTRACTION_FAILED' | 'SSRF_BLOCKED' | 'FETCH_FAILED';
+      code:
+        | 'UNSUPPORTED_FORMAT'
+        | 'EXTRACTION_FAILED'
+        | 'SSRF_BLOCKED'
+        | 'REDIRECT_BLOCKED'
+        | 'FETCH_FAILED';
       message: string;
     };
 
@@ -27,22 +32,20 @@ const NON_CONTENT_SELECTORS = 'script, style, nav, header, footer, aside, noscri
 /**
  * Fetch a policy URL, SSRF-validating the initial URL and the final landing URL.
  *
- * Redirect handling note: `fetch(..., { redirect: 'manual' })` in a worker returns
- * an OPAQUE redirect — status 0, `type: 'opaqueredirect'`, and the `Location`
- * header is unreadable by design. So we cannot inspect intermediate hops from JS
- * regardless of approach. We therefore let the browser follow redirects (default
- * `redirect: 'follow'`, constrained to https by the extension's https host
- * permissions), validate the user-selected URL up front (blocks a planted loopback/private
- * target), and re-validate `response.url` (the final landing URL) afterward,
- * rejecting if it resolved to a private/loopback/link-local host. Intermediate
- * hops are not observable to any client-side approach; this validates the two
- * endpoints that matter.
+ * Redirect handling (SSRF): with `redirect: 'follow'` the browser sends requests
+ * to every intermediate hop before we can inspect them, and intermediate hops are
+ * unobservable from JS (a manual redirect is opaque — its `Location` is unreadable).
+ * So we cannot validate each hop. Instead, for the MVP we DO NOT follow redirects
+ * at all: we fetch with `redirect: 'manual'` and treat any redirect as a hard stop.
+ * This closes the "public page 302s to https://192.168.x.x" SSRF vector entirely,
+ * at the cost of rejecting legitimate policy pages that redirect (a documented MVP
+ * limitation). The user-selected URL is still validated up front.
  */
 async function fetchWithGuardedRedirects(
   startUrl: string,
 ): Promise<
   | { ok: true; response: Response; finalUrl: string }
-  | { ok: false; code: 'SSRF_BLOCKED' | 'FETCH_FAILED'; message: string }
+  | { ok: false; code: 'SSRF_BLOCKED' | 'REDIRECT_BLOCKED' | 'FETCH_FAILED'; message: string }
 > {
   // Validate the initial (user-selected) URL before fetching.
   const initial = validatePolicyUrl(startUrl);
@@ -52,20 +55,24 @@ async function fetchWithGuardedRedirects(
 
   let response: Response;
   try {
-    response = await fetch(initial.url, { redirect: 'follow', credentials: 'omit' });
+    // `redirect: 'manual'`: a redirect surfaces as an opaque response (type
+    // 'opaqueredirect' / status 0) rather than being followed, so we can detect
+    // and refuse it without ever fetching the redirect target.
+    response = await fetch(initial.url, { redirect: 'manual', credentials: 'omit' });
   } catch {
     return { ok: false, code: 'FETCH_FAILED', message: "Couldn't fetch that page." };
   }
 
-  // Re-validate the final landing URL (after any redirects the browser followed).
-  // `response.url` reflects the final URL; fall back to the initial if empty.
-  const finalCandidate = response.url || initial.url;
-  const finalCheck = validatePolicyUrl(finalCandidate);
-  if (!finalCheck.ok) {
-    return { ok: false, code: 'SSRF_BLOCKED', message: rejectionMessage(finalCheck.reason) };
+  // Any redirect -> refuse (we do not follow, to avoid an unvalidated hop).
+  if (response.type === 'opaqueredirect' || (response.status >= 300 && response.status < 400)) {
+    return {
+      ok: false,
+      code: 'REDIRECT_BLOCKED',
+      message: 'That link redirects elsewhere; open the final policy page directly and try again.',
+    };
   }
 
-  return { ok: true, response, finalUrl: finalCheck.url };
+  return { ok: true, response, finalUrl: initial.url };
 }
 
 /**

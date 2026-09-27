@@ -93,11 +93,12 @@ export function detectPolicyLinks(doc: Document = document): DetectedLink[] {
       continue;
     }
 
-    // Deduplicate by resolved URL; keep the first occurrence's text, but prefer
-    // a non-empty text over an empty one if a later duplicate has better text.
+    // Deduplicate by resolved URL. Store the raw text (which may be empty for an
+    // icon-only anchor); if a later duplicate of the same URL has real text,
+    // upgrade to it. Display fallback to the URL is handled by the popup.
     const existing = byUrl.get(resolved);
     if (!existing) {
-      byUrl.set(resolved, { url: resolved, text: text || resolved });
+      byUrl.set(resolved, { url: resolved, text });
     } else if (!existing.text && text) {
       existing.text = text;
     }
